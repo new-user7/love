@@ -68,7 +68,7 @@ const {
 const express = require("express");
 const app = express();
   
-//===================SESSION-AUTH============================
+//===================SESSION-AUTH (BASE64)============================
 const sessionDir = path.join(__dirname, 'sessions');
 const credsPath = path.join(sessionDir, 'creds.json');
 
@@ -77,56 +77,40 @@ if (!fs.existsSync(sessionDir)) {
     fs.mkdirSync(sessionDir, { recursive: true });
 }
 
-async function loadSession() {
+async function loadSessionFromBase64() {
     try {
-        if (!config.SESSION_ID) {
-            console.log('No SESSION_ID provided - QR login will be generated');
-            return null;
-        }
-
-        console.log('[⏳] Downloading creds data...');
-        console.log('[🔰] Downloading MEGA.nz session...');
-        
-        const megaFileId = config.SESSION_ID.startsWith('Qadeer~') 
-            ? config.SESSION_ID.replace("Qadeer~", "") 
-            : config.SESSION_ID;
-
-        const filer = File.fromURL(`https://mega.nz/file/${megaFileId}`);
+        if (config.SESSION_ID && config.SESSION_ID.trim() !== '') {
+            console.log('[🔑] SESSION_ID se session data load kiya ja raha hai...');
             
-        const data = await new Promise((resolve, reject) => {
-            filer.download((err, data) => {
-                if (err) reject(err);
-                else resolve(data);
-            });
-        });
-        
-        fs.writeFileSync(credsPath, data);
-        console.log('[✅] MEGA session downloaded successfully');
-        return JSON.parse(data.toString());
+            // Decode Base64 string
+            const decodedData = Buffer.from(config.SESSION_ID, 'base64').toString('utf-8');
+            
+            // Write decoded data to creds.json
+            fs.writeFileSync(credsPath, decodedData);
+            console.log('[✅] Session file successfully ban gayi.');
+            return true; // Return true to indicate success
+        }
     } catch (error) {
-        console.error('❌ Error loading session:', error.message);
-        console.log('Will generate QR code instead');
-        return null;
+        console.error('❌ Session load karne mein galti hui:', error.message);
     }
+    console.log('[🤳] SESSION_ID nahi mila, QR code generate kiya jayega.');
+    return false; // Return false if no session_id
 }
-
-//=======SESSION-AUTH==============
   
   async function connectToWA() {
   console.log("Connecting to WhatsApp ⏳️...");
 
-  // Load session if available
-  const creds = await loadSession();
+  // Load session from SESSION_ID
+  const sessionExists = await loadSessionFromBase64();
     
-  const { state, saveCreds } = await useMultiFileAuthState(path.join(__dirname, 'sessions'), {
-      creds: creds || undefined // Pass loaded creds if available
-  });
+  const { state, saveCreds } = await useMultiFileAuthState(path.join(__dirname, 'sessions'));
   
   var { version } = await fetchLatestBaileysVersion()
   
   const conn = makeWASocket({
           logger: P({ level: 'silent' }),
-          printQRInTerminal: !creds, // Only show QR if no session loaded
+          // Sirf tab QR dikhayein jab session na ho
+          printQRInTerminal: !sessionExists, 
           browser: Browsers.macOS("Firefox"),
           syncFullHistory: true,
           auth: state,
@@ -134,14 +118,18 @@ async function loadSession() {
           })
       
   conn.ev.on('connection.update', (update) => {
-  const { connection, lastDisconnect, qr } = update
+  const { connection, lastDisconnect, qr } = update;
+
   if (connection === 'close') {
-  if (lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut) {
-    console.log('[🤖] Connection lost, reconnecting...');
-    setTimeout(connectToWA, 5000);
-  } else {
-    console.log('[🤖] Connection closed, please change session ID');
-  }
+      const shouldReconnect = (lastDisconnect.error)?.output?.statusCode !== DisconnectReason.loggedOut;
+      console.log('Connection closed due to ', lastDisconnect.error, ', reconnecting ', shouldReconnect);
+      if (shouldReconnect) {
+          setTimeout(connectToWA, 5000);
+      } else {
+          console.log('[🤖] Connection closed. Aap logout ho chuke hain. Naya session banayein.');
+          // Optional: exit process if logged out
+          // process.exit(1);
+      }
   } else if (connection === 'open') {
   console.log('🧬 Installing Plugins')
   const path = require('path');
@@ -156,8 +144,8 @@ async function loadSession() {
   let up = `*Hello there QADEER-AI User! 👋🏻* \n\n> Simple , Straight Forward But Loaded With Features 🥳, Meet QADEER-AI WhatsApp Bot.\n\n *Thanks for using QADEER-AI 🚩* \n\n> Join WhatsApp Channel :- ⤵️\n \nhttps://whatsapp.com/channel/0029VajWxSZ96H4SyQLurV1H \n\n- *YOUR PREFIX:* = ${prefix}\n\nDont forget to give star to repo ⬇️\n\nhttps://github.com/Qadeer-Xtech/QADEER-AI\n\n> © 𝙿𝙾𝚆𝙴𝚁𝙴𝙳 𝙱𝚈 𝚀𝙰𝙳𝙴𝙴𝚁 𝙺𝙷𝙰𝙽  🖤`;
     conn.sendMessage(conn.user.id, { image: { url: `https://files.catbox.moe/3tihge.jpg` }, caption: up })
   }
-  if (qr) {
-    console.log('[🤖] Scan the QR code to connect or use session ID');
+  if (qr && !sessionExists) {
+    console.log('[🤖] Please scan the QR code to connect.');
   }
   })
   conn.ev.on('creds.update', saveCreds)
