@@ -67,7 +67,6 @@ const {
 
 const express = require("express");
 const app = express();
-const port = process.env.PORT || 9090;
   
 //===================SESSION-AUTH============================
 const sessionDir = path.join(__dirname, 'sessions');
@@ -88,7 +87,6 @@ async function loadSession() {
         console.log('[⏳] Downloading creds data...');
         console.log('[🔰] Downloading MEGA.nz session...');
         
-        // Remove "Qadeer~" prefix if present, otherwise use full SESSION_ID
         const megaFileId = config.SESSION_ID.startsWith('Qadeer~') 
             ? config.SESSION_ID.replace("Qadeer~", "") 
             : config.SESSION_ID;
@@ -815,10 +813,18 @@ if (!isReact && config.CUSTOM_REACT === 'true') {
     conn.serializeM = mek => sms(conn, mek, store);
   }
   
-  app.get("/", (req, res) => {
-  res.send("QADEER-AI STARTED ✅");
-  });
-  app.listen(port, () => console.log(`Server listening on port http://localhost:${port}`));
-  setTimeout(() => {
-  connectToWA()
-  }, 4000);
+// --- SERVER SETUP (HEROKU COMPATIBLE) ---
+const port = process.env.PORT || 9090;
+
+app.get("/", (req, res) => {
+  res.send("QADEER-AI SERVER IS RUNNING ✅");
+});
+
+app.listen(port, () => {
+  console.log(`Server is listening on port: ${port}`);
+});
+
+// Start the bot after a small delay
+setTimeout(() => {
+  connectToWA();
+}, 4000);
