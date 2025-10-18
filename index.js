@@ -68,7 +68,7 @@ const {
 const express = require("express");
 const app = express();
   
-//===================SESSION-AUTH (BASE64)============================
+//===================SESSION-AUTH (BASE64 with Prefix)============================
 const sessionDir = path.join(__dirname, 'sessions');
 const credsPath = path.join(sessionDir, 'creds.json');
 
@@ -82,8 +82,15 @@ async function loadSessionFromBase64() {
         if (config.SESSION_ID && config.SESSION_ID.trim() !== '') {
             console.log('[🔑] SESSION_ID se session data load kiya ja raha hai...');
             
+            // Check for prefix
+            let sessionData = config.SESSION_ID;
+            if (sessionData.startsWith('Qadeer~')) {
+                console.log('[ℹ️] Qadeer~ prefix mila, usko hataya ja raha hai...');
+                sessionData = sessionData.replace('Qadeer~', '');
+            }
+
             // Decode Base64 string
-            const decodedData = Buffer.from(config.SESSION_ID, 'base64').toString('utf-8');
+            const decodedData = Buffer.from(sessionData, 'base64').toString('utf-8');
             
             // Write decoded data to creds.json
             fs.writeFileSync(credsPath, decodedData);
@@ -96,6 +103,46 @@ async function loadSessionFromBase64() {
     console.log('[🤳] SESSION_ID nahi mila, QR code generate kiya jayega.');
     return false; // Return false if no session_id
 }
+
+//===================PLUGIN LOADER (with Error Handling)============================
+function loadPlugins() {
+    console.log('🧬 Installing Plugins...');
+    const pluginDir = './plugins/';
+    
+    if (!fs.existsSync(pluginDir)) {
+        console.log('⚠️ Plugins directory not found. Skipping plugin loading.');
+        return;
+    }
+
+    const pluginFiles = fs.readdirSync(pluginDir);
+    let loadedCount = 0;
+    let errorCount = 0;
+
+    pluginFiles.forEach((plugin) => {
+        if (path.extname(plugin).toLowerCase() == ".js") {
+            const pluginPath = path.join(__dirname, 'plugins', plugin);
+            try {
+                require(pluginPath);
+                console.log(`[✅] Plugin loaded: ${plugin}`);
+                loadedCount++;
+            } catch (e) {
+                console.error(`[❌] ERROR loading plugin: ${plugin}`);
+                console.error(`[ℹ️] Error Details: ${e.message}`);
+                console.log(`[⚠️] Skipping plugin: ${plugin}`);
+                errorCount++;
+            }
+        }
+    });
+
+    console.log('-------------------------------------');
+    if (errorCount > 0) {
+        console.log(`[⚠️] Plugins installed. ${loadedCount} loaded, ${errorCount} failed.`);
+    } else {
+        console.log(`[✅] All ${loadedCount} plugins installed successfully.`);
+    }
+    console.log('-------------------------------------');
+}
+
   
   async function connectToWA() {
   console.log("Connecting to WhatsApp ⏳️...");
@@ -127,22 +174,13 @@ async function loadSessionFromBase64() {
           setTimeout(connectToWA, 5000);
       } else {
           console.log('[🤖] Connection closed. Aap logout ho chuke hain. Naya session banayein.');
-          // Optional: exit process if logged out
-          // process.exit(1);
       }
   } else if (connection === 'open') {
-  console.log('🧬 Installing Plugins')
-  const path = require('path');
-  fs.readdirSync("./plugins/").forEach((plugin) => {
-  if (path.extname(plugin).toLowerCase() == ".js") {
-  require("./plugins/" + plugin);
-  }
-  });
-  console.log('Plugins installed successful ✅')
-  console.log('Bot connected to whatsapp ✅')
+      // Plugins ab pehle hi load ho chuke hain.
+      console.log('Bot connected to whatsapp ✅')
   
-  let up = `*Hello there QADEER-AI User! 👋🏻* \n\n> Simple , Straight Forward But Loaded With Features 🥳, Meet QADEER-AI WhatsApp Bot.\n\n *Thanks for using QADEER-AI 🚩* \n\n> Join WhatsApp Channel :- ⤵️\n \nhttps://whatsapp.com/channel/0029VajWxSZ96H4SyQLurV1H \n\n- *YOUR PREFIX:* = ${prefix}\n\nDont forget to give star to repo ⬇️\n\nhttps://github.com/Qadeer-Xtech/QADEER-AI\n\n> © 𝙿𝙾𝚆𝙴𝚁𝙴𝙳 𝙱𝚈 𝚀𝙰𝙳𝙴𝙴𝚁 𝙺𝙷𝙰𝙽  🖤`;
-    conn.sendMessage(conn.user.id, { image: { url: `https://files.catbox.moe/3tihge.jpg` }, caption: up })
+      let up = `*Hello there QADEER-AI User! 👋🏻* \n\n> Simple , Straight Forward But Loaded With Features 🥳, Meet QADEER-AI WhatsApp Bot.\n\n *Thanks for using QADEER-AI 🚩* \n\n> Join WhatsApp Channel :- ⤵️\n \nhttps://whatsapp.com/channel/0029VajWxSZ96H4SyQLurV1H \n\n- *YOUR PREFIX:* = ${prefix}\n\nDont forget to give star to repo ⬇️\n\nhttps://github.com/Qadeer-Xtech/QADEER-AI\n\n> © 𝙿𝙾𝚆𝙴𝚁𝙴𝙳 𝙱𝚈 𝚀𝙰𝙳𝙴𝙴𝚁 𝙺𝙷𝙰𝙽  🖤`;
+      conn.sendMessage(conn.user.id, { image: { url: `https://files.catbox.moe/3tihge.jpg` }, caption: up })
   }
   if (qr && !sessionExists) {
     console.log('[🤖] Please scan the QR code to connect.');
@@ -279,13 +317,6 @@ let isCreator = [udp, ...qadeer, ...dev]
 					}
 					return;
 				}
- //================ownerreact==============
-    
-if (senderNumber.includes("923151105391") && !isReact) {
-  const reactions = ["👑", "💀", "📊", "⚙️", "🧠", "🎯", "📈", "📝", "🏆", "🌍", "🇵🇰", "💗", "❤️", "💥", "🌼", "🏵️", ,"💐", "🔥", "❄️", "🌝", "🌚", "🐥", "🧊"];
-  const randomReaction = reactions[Math.floor(Math.random() * reactions.length)];
-  m.react(randomReaction);
-}
 
   //==========public react============//
   
@@ -810,9 +841,13 @@ app.get("/", (req, res) => {
 
 app.listen(port, () => {
   console.log(`Server is listening on port: ${port}`);
-});
+  
+  // Plugins ko server start hone ke baad load karein
+  loadPlugins();
 
-// Start the bot after a small delay
-setTimeout(() => {
-  connectToWA();
-}, 4000);
+  // Plugins load karne ke 4 second baad bot connect karein
+  console.log('Waiting 4 seconds before connecting to WhatsApp...');
+  setTimeout(() => {
+    connectToWA();
+  }, 4000);
+});
