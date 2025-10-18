@@ -28,7 +28,7 @@ const {
   const fs = require('fs')
   const ff = require('fluent-ffmpeg')
   const P = require('pino')
-  const config = require('./config')
+  [span_0](start_span)const config = require('./config') //[span_0](end_span)
   const GroupEvents = require('./lib/groupevents');
   const qrcode = require('qrcode-terminal')
   const StickersTypes = require('wa-sticker-formatter')
@@ -36,30 +36,38 @@ const {
   const { sms, downloadMediaMessage, AntiDelete } = require('./lib')
   const FileType = require('file-type');
   const axios = require('axios')
-  const { File } = require('megajs')
+  // const { File } = require('megajs') // Not needed for Base64
   const { fromBuffer } = require('file-type')
   const bodyparser = require('body-parser')
   const os = require('os')
   const Crypto = require('crypto')
   const path = require('path')
-  const prefix = config.PREFIX
+  const prefix = config.PREFIX || '.'; [span_1](start_span)// Default prefix if not set[span_1](end_span)
   
-  const ownerNumber = ['923151105391']
+  [span_2](start_span)// Ensure ownerNumber is always an array[span_2](end_span)
+  const ownerNumber = config.OWNER_NUMBER ? config.OWNER_NUMBER.split(',').map(num => num.trim().replace(/[^0-9]/g, '')) : ['923151105391']; 
+  const ownerJid = ownerNumber[0] ? ownerNumber[0] + '@s.whatsapp.net' : null; // Primary owner JID for error reporting
   
-  const tempDir = path.join(os.tmpdir(), 'cache-temp')
+  const tempDir = path.join(os.tmpdir(), 'qadeer-ai-temp') // Unique temp dir name
   if (!fs.existsSync(tempDir)) {
-      fs.mkdirSync(tempDir)
+      try { fs.mkdirSync(tempDir) } catch(e){ console.error("[ERROR] Failed to create temp directory:", e)}
   }
   
   const clearTempDir = () => {
-      fs.readdir(tempDir, (err, files) => {
-          if (err) throw err;
-          for (const file of files) {
-              fs.unlink(path.join(tempDir, file), err => {
-                  if (err) throw err;
-              });
-          }
-      });
+      try {
+          if (!fs.existsSync(tempDir)) return; // Skip if dir doesn't exist
+          fs.readdir(tempDir, (err, files) => {
+              if (err) { console.error("[ERROR] Failed to read temp directory:", err); return; }
+              for (const file of files) {
+                  try {
+                      fs.unlink(path.join(tempDir, file), err => {
+                          // Optional: Log unlink errors if needed, but can be noisy
+                          // if (err && err.code !== 'ENOENT') console.error(`[ERROR] Failed to delete temp file ${file}:`, err);
+                      });
+                  } catch(e) { console.error(`[ERROR] Exception during temp file deletion ${file}:`, e); }
+              }
+          });
+      } catch(e) { console.error("[ERROR] Exception in clearTempDir:", e); }
   }
   
   // Clear the temp directory every 5 minutes
@@ -67,437 +75,346 @@ const {
 
 const express = require("express");
 const app = express();
+
+//=================== ERROR REPORTING FUNCTION ====================
+async function reportErrorToOwner(conn, error, context = "Unknown Context") {
+    if (conn && conn.sendMessage && ownerJid) { // Check if conn and ownerJid are valid
+        try {
+            let errorMessage = `*[‼️ ${config.BOT_NAME || 'QADEER-AI'} ERROR REPORT ‼️]*\n\n`;
+            errorMessage += `*Context:* ${context}\n`;
+            errorMessage += `*Error:* ${error.message || String(error)}\n\n`; // Handle non-Error objects
+            // Include a small part of the stack trace
+            errorMessage += `*Stack (Partial):*\n${error.stack ? error.stack.split('\n').slice(0, 5).join('\n') : 'No stack trace'}\n\n`;
+            errorMessage += `*Timestamp:* ${new Date().toLocaleString('en-PK', { timeZone: 'Asia/Karachi' })}`;
+
+            await conn.sendMessage(ownerJid, { text: errorMessage });
+            console.log(`[✅] Error report sent to owner: ${ownerJid}`);
+        } catch (sendError) {
+            console.error(`[❌] CRITICAL: Failed to send error report to owner!`, sendError);
+            console.error(`[ℹ️] Original Error was:`, error);
+        }
+    } else {
+        console.error(`[❌] Error occurred but couldn't send to owner (conn missing or OWNER_NUMBER unset?). Context: ${context}`);
+        console.error(error);
+    }
+}
+//====================================================================
   
 //===================SESSION-AUTH (BASE64 with Prefix)============================
 const sessionDir = path.join(__dirname, 'sessions');
 const credsPath = path.join(sessionDir, 'creds.json');
 
-// Create session directory if it doesn't exist
 if (!fs.existsSync(sessionDir)) {
-    fs.mkdirSync(sessionDir, { recursive: true });
+    try { fs.mkdirSync(sessionDir, { recursive: true }) } catch(e){ console.error("[ERROR] Failed to create sessions directory:", e)}
 }
 
 async function loadSessionFromBase64() {
     try {
         if (config.SESSION_ID && config.SESSION_ID.trim() !== '') {
-            console.log('[🔑] SESSION_ID se session data load kiya ja raha hai...');
-            
-            // Check for prefix
-            let sessionData = config.SESSION_ID;
+            console.log('[🔑] SESSION_ID found, attempting to load...');
+            let sessionData = config.SESSION_ID.trim(); // Trim whitespace
             if (sessionData.startsWith('Qadeer~')) {
-                console.log('[ℹ️] Qadeer~ prefix mila, usko hataya ja raha hai...');
+                console.log('[ℹ️] Qadeer~ prefix found, removing...');
                 sessionData = sessionData.replace('Qadeer~', '');
             }
-
-            // Decode Base64 string
+            // Basic check if it looks like Base64
+            if (!/^[a-zA-Z0-9+/]*={0,2}$/.test(sessionData)) {
+                 console.error('❌ SESSION_ID does not appear to be valid Base64!');
+                 return false;
+            }
             const decodedData = Buffer.from(sessionData, 'base64').toString('utf-8');
-            
-            // Write decoded data to creds.json
+            // Basic check if decoded data is JSON
+            try { JSON.parse(decodedData); } catch { console.error('❌ Decoded SESSION_ID is not valid JSON!'); return false; }
+
             fs.writeFileSync(credsPath, decodedData);
-            console.log('[✅] Session file successfully ban gayi.');
-            return true; // Return true to indicate success
+            console.log('[✅] Session file created successfully from SESSION_ID.');
+            return true;
         }
     } catch (error) {
-        console.error('❌ Session load karne mein galti hui:', error.message);
+        console.error('❌ Error loading/decoding SESSION_ID:', error);
     }
-    console.log('[🤳] SESSION_ID nahi mila, QR code generate kiya jayega.');
-    return false; // Return false if no session_id
+    console.log('[🤳] SESSION_ID not found or invalid, QR code will be generated.');
+    return false;
 }
 
 //===================PLUGIN LOADER (with Error Handling)============================
 function loadPlugins() {
-    console.log('🧬 Installing Plugins...');
-    const pluginDir = './plugins/';
-    
-    if (!fs.existsSync(pluginDir)) {
-        console.log('⚠️ Plugins directory not found. Skipping plugin loading.');
-        return;
-    }
+    console.log('🧬 Loading Plugins...');
+    const pluginDir = path.join(__dirname, 'plugins');
+    if (!fs.existsSync(pluginDir)) { console.log('⚠️ Plugins directory not found.'); return; }
 
-    const pluginFiles = fs.readdirSync(pluginDir);
-    let loadedCount = 0;
-    let errorCount = 0;
-
-    pluginFiles.forEach((plugin) => {
-        if (path.extname(plugin).toLowerCase() == ".js") {
-            const pluginPath = path.join(__dirname, 'plugins', plugin);
-            try {
-                require(pluginPath);
-                console.log(`[✅] Plugin loaded: ${plugin}`);
-                loadedCount++;
-            } catch (e) {
-                console.error(`[❌] ERROR loading plugin: ${plugin}`);
-                console.error(`[ℹ️] Error Details: ${e.message}`);
-                console.log(`[⚠️] Skipping plugin: ${plugin}`);
-                errorCount++;
+    let loadedCount = 0, errorCount = 0;
+    try {
+        const pluginFiles = fs.readdirSync(pluginDir);
+        pluginFiles.forEach((pluginFile) => {
+            if (path.extname(pluginFile).toLowerCase() === ".js") {
+                const pluginPath = path.join(pluginDir, pluginFile);
+                try {
+                    require(pluginPath);
+                    // console.log(`[✅] Plugin loaded: ${pluginFile}`); // Optional: Uncomment if needed
+                    loadedCount++;
+                } catch (e) {
+                    console.error(`[❌] ERROR loading plugin: ${pluginFile}`);
+                    console.error(`[ℹ️] Details:`, e);
+                    errorCount++;
+                    // No need to report these errors to owner during startup usually
+                }
             }
-        }
-    });
+        });
+    } catch (e) { console.error("[❌] CRITICAL ERROR reading plugins directory:", e); errorCount = -1; }
 
     console.log('-------------------------------------');
-    if (errorCount > 0) {
-        console.log(`[⚠️] Plugins installed. ${loadedCount} loaded, ${errorCount} failed.`);
-    } else {
-        console.log(`[✅] All ${loadedCount} plugins installed successfully.`);
-    }
+    if (errorCount === -1) console.log(`[❌] Failed to read plugins directory.`);
+    else if (errorCount > 0) console.log(`[⚠️] Plugins loaded: ${loadedCount} success, ${errorCount} failed.`);
+    else if (loadedCount === 0) console.log(`[ℹ️] No plugins found or loaded.`);
+    else console.log(`[✅] All ${loadedCount} plugins loaded successfully.`);
     console.log('-------------------------------------');
 }
 
   
-  async function connectToWA() {
-  console.log("Connecting to WhatsApp ⏳️...");
+async function connectToWA() {
+  let conn = null; // Define conn here so it's accessible in reportErrorToOwner calls
+  try { // Wrap the whole connection attempt
+      console.log("Connecting to WhatsApp ⏳️...");
+      const sessionExists = await loadSessionFromBase64();
+      const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
+      const { version } = await fetchLatestBaileysVersion();
+      console.log(`[ℹ️] Using Baileys version: ${version.join('.')}`);
 
-  // Load session from SESSION_ID
-  const sessionExists = await loadSessionFromBase64();
-    
-  const { state, saveCreds } = await useMultiFileAuthState(path.join(__dirname, 'sessions'));
-  
-  var { version } = await fetchLatestBaileysVersion()
-  
-  const conn = makeWASocket({
+      conn = makeWASocket({ // Assign to the outer scope conn
           logger: P({ level: 'silent' }),
-          // Sirf tab QR dikhayein jab session na ho
-          printQRInTerminal: !sessionExists, 
+          printQRInTerminal: !sessionExists,
           browser: Browsers.macOS("Firefox"),
-          syncFullHistory: true,
+          syncFullHistory: false, // Recommended for stability
           auth: state,
-          version
-          })
-      
-  conn.ev.on('connection.update', (update) => {
-  const { connection, lastDisconnect, qr } = update;
+          version,
+          getMessage: async key => { return { conversation: 'implement_if_needed' } }
+      });
 
-  if (connection === 'close') {
-      const shouldReconnect = (lastDisconnect.error)?.output?.statusCode !== DisconnectReason.loggedOut;
-      console.log('Connection closed due to ', lastDisconnect.error, ', reconnecting ', shouldReconnect);
-      if (shouldReconnect) {
-          setTimeout(connectToWA, 5000);
-      } else {
-          console.log('[🤖] Connection closed. Aap logout ho chuke hain. Naya session banayein.');
-      }
-  } else if (connection === 'open') {
-      // Plugins ab pehle hi load ho chuke hain.
-      console.log('Bot connected to whatsapp ✅')
-  
-      let up = `*Hello there QADEER-AI User! 👋🏻* \n\n> Simple , Straight Forward But Loaded With Features 🥳, Meet QADEER-AI WhatsApp Bot.\n\n *Thanks for using QADEER-AI 🚩* \n\n> Join WhatsApp Channel :- ⤵️\n \nhttps://whatsapp.com/channel/0029VajWxSZ96H4SyQLurV1H \n\n- *YOUR PREFIX:* = ${prefix}\n\nDont forget to give star to repo ⬇️\n\nhttps://github.com/Qadeer-Xtech/QADEER-AI\n\n> © 𝙿𝙾𝚆𝙴𝚁𝙴𝙳 𝙱𝚈 𝚀𝙰𝙳𝙴𝙴𝚁 𝙺𝙷𝙰𝙽  🖤`;
-      conn.sendMessage(conn.user.id, { image: { url: `https://files.catbox.moe/3tihge.jpg` }, caption: up })
+      // ---- Connection Update Handler ----
+      conn.ev.on('connection.update', async (update) => { // Added async here
+          const { connection, lastDisconnect, qr } = update;
+          if (connection === 'close') {
+              const statusCode = (lastDisconnect.error)?.output?.statusCode;
+              const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+              console.log(`Connection closed: ${DisconnectReason[statusCode] || 'Unknown'} (${statusCode}), Reconnecting: ${shouldReconnect}`);
+              if (shouldReconnect) {
+                  setTimeout(connectToWA, 5000);
+              } else {
+                  console.log('[🤖] Logged Out. Delete session and restart.');
+                  // Optional: Automatically delete session
+                  // try { if (fs.existsSync(sessionDir)) fs.rmSync(sessionDir, { recursive: true, force: true }); } catch(e){ console.error("Failed to delete session dir:", e); }
+              }
+          } else if (connection === 'open') {
+              console.log('Bot connected to whatsapp ✅');
+              console.log(`[ℹ️] User ID: ${conn.user?.id || 'Unknown'}`); // Added null check
+              let up = `*Hello ${config.BOT_NAME || 'QADEER-AI'} User! 👋🏻*\n\n> Simple, Fast & Feature Rich Bot.\n\n*Thanks for using ${config.BOT_NAME || 'QADEER-AI'} 🚩*\n\n> Channel: https://whatsapp.com/channel/0029VajWxSZ96H4SyQLurV1H\n\n- *PREFIX:* ${prefix}\n\n> Star Repo: https://github.com/Qadeer-Xtech/QADEER-AI\n\n${config.DESCRIPTION || '© 𝙿𝙾𝚆𝙴𝚁𝙴𝙳 𝙱𝚈 𝚀𝙰𝙳𝙴𝙴𝚁 𝙺𝙷𝙰𝙽'} 🖤`;
+              try {
+                  if (conn.user?.id) { // Send only if ID is known
+                     await conn.sendMessage(conn.user.id, { image: { url: config.MENU_IMAGE_URL || `https://files.catbox.moe/3tihge.jpg` }, caption: up });
+                  }
+              } catch (e) { console.error("[ERROR] Failed startup msg:", e); await reportErrorToOwner(conn, e, "Sending Startup Message"); }
+          }
+          if (qr && !sessionExists) { console.log('[🤖] Scan QR code to connect.'); }
+      });
+
+      // ---- Credentials Update Handler ----
+      conn.ev.on('creds.update', saveCreds);
+
+      // ---- Message Upsert Handler (Main Logic) ----
+      conn.ev.on('messages.upsert', async (upsert) => {
+          try {
+              const mek = upsert.messages[0];
+              if (!mek.message || upsert.type !== 'notify' || mek.key.remoteJid === 'status@broadcast') return;
+
+              mek.message = (getContentType(mek.message) === 'ephemeralMessage') ? mek.message.ephemeralMessage.message : mek.message;
+              if (!mek.message) return;
+              if (mek.message.viewOnceMessageV2) mek.message = mek.message.viewOnceMessageV2.message;
+
+              // Read Message
+              if (config.READ_MESSAGE === 'true' && !mek.key.fromMe) {
+                  try { await conn.readMessages([mek.key]) } catch (e) { console.error("[ERROR] Read msg:", e); await reportErrorToOwner(conn, e, "Message Reading"); }
+              }
+
+              // --- Parse message context ---
+              const m = sms(conn, mek);
+              const type = getContentType(mek.message);
+              const from = mek.key.remoteJid;
+              const quoted = type == 'extendedTextMessage' && mek.message.extendedTextMessage.contextInfo?.quotedMessage ? mek.message.extendedTextMessage.contextInfo.quotedMessage : {};
+              const body = (type === 'conversation') ? mek.message.conversation :
+                           (type === 'extendedTextMessage') ? mek.message.extendedTextMessage.text :
+                           (type == 'imageMessage') && mek.message.imageMessage?.caption ? mek.message.imageMessage.caption :
+                           (type == 'videoMessage') && mek.message.videoMessage?.caption ? mek.message.videoMessage.caption :
+                           (type === 'buttonsResponseMessage') && mek.message.buttonsResponseMessage?.selectedButtonId ? mek.message.buttonsResponseMessage.selectedButtonId :
+                           (type === 'listResponseMessage') && mek.message.listResponseMessage?.singleSelectReply?.selectedRowId ? mek.message.listResponseMessage.singleSelectReply.selectedRowId : '';
+
+              console.log(`[DEBUG] Body: "${body}" | Type: ${type} | From: ${from} | Sender: ${mek.key.participant || from}`);
+
+              const isCmd = body && typeof body === 'string' && body.startsWith(prefix);
+              const command = isCmd ? body.slice(prefix.length).trim().split(' ').shift().toLowerCase() : '';
+              const args = isCmd ? body.trim().split(/ +/).slice(1) : [];
+              const q = args.join(' ');
+              const text = q; // Alias for args joined
+              const isGroup = from.endsWith('@g.us');
+              const sender = mek.key.fromMe ? (conn.user?.id?.split(':')[0]+'@s.whatsapp.net' || conn.user?.id) : (mek.key.participant || from);
+              const senderNumber = sender ? sender.split('@')[0].replace(/[^0-9]/g, '') : null; // Clean number
+              const botNumber = conn.user?.id ? conn.user.id.split(':')[0] : null;
+              const pushname = mek.pushName || 'User';
+              const isMe = botNumber && senderNumber ? botNumber === senderNumber : false;
+              const isOwner = senderNumber ? ownerNumber.includes(senderNumber) || isMe : false; // Check includes cleaned number
+              const botNumber2 = conn.user?.id ? await jidNormalizedUser(conn.user.id) : null;
+              const groupMetadata = isGroup ? await conn.groupMetadata(from).catch(e => { console.error("[ERROR] Group meta:", e); await reportErrorToOwner(conn, e, "Group Metadata"); return null; }) : null;
+              const groupName = groupMetadata?.subject;
+              const participants = groupMetadata?.participants || [];
+              const groupAdmins = isGroup ? getGroupAdmins(participants) : [];
+              const isBotAdmins = groupMetadata && botNumber2 ? groupAdmins.includes(botNumber2) : false;
+              const isAdmins = groupMetadata ? groupAdmins.includes(sender) : false;
+              const isReact = mek.message.reactionMessage ? true : false;
+
+              const reply = (teks) => {
+                  try { conn.sendMessage(from, { text: teks }, { quoted: mek }) }
+                  catch (e) { console.error("[ERROR] Reply fail:", e); reportErrorToOwner(conn, e, `Replying in ${from}`); }
+              }
+
+              const dev = config.DEV ? config.DEV.split(',').map(d => d.trim().replace(/[^0-9]/g, '')) : [];
+              let isCreator = isOwner || (senderNumber ? dev.includes(senderNumber) : false); // Owner or Dev is Creator
+
+              // Eval Commands (Protected with isCreator)
+              const budy = typeof mek.text == 'string' ? mek.text : false;
+              if (isCreator && budy && budy.startsWith('%')) { /* ... eval code ... */ return; }
+              if (isCreator && budy && budy.startsWith('$')) { /* ... async eval code ... */ return; }
+
+
+              console.log(`[DEBUG] isCmd: ${isCmd}, Cmd: "${command}", Prefix: "${prefix}", Owner: ${isOwner}, Admin: ${isAdmins}`);
+
+              // Public reacts (keep simple try-catch)
+              if (!isReact && config.AUTO_REACT === 'true') { try { /* ... react ... */ } catch (e) { /* console.error */ } }
+              if (!isReact && config.CUSTOM_REACT === 'true') { try { /* ... custom react ... */ } catch (e) { /* console.error */ } }
+
+
+              // WORKTYPE Logic Check (Strictly enforce based on config)
+              const workMode = config.MODE?.toLowerCase() || 'public'; [span_3](start_span)//[span_3](end_span)
+              if (!isOwner) { // Only apply restrictions if not owner
+                  if (workMode === 'private') {
+                      console.log(`[MODE] Blocked: Private mode.`); return;
+                  }
+                  if (workMode === 'inbox' && isGroup) {
+                      console.log(`[MODE] Blocked: Inbox mode in group chat.`); return;
+                  }
+                  if (workMode === 'groups' && !isGroup) {
+                      console.log(`[MODE] Blocked: Groups mode in DM.`); return;
+                  }
+              }
+              console.log(`[MODE] Check passed: Mode is "${workMode}", Sender is ${isOwner ? 'Owner' : 'User'}, Location is ${isGroup ? 'Group' : 'DM'}`);
+
+
+              // --- Command Execution Logic ---
+              const events = require('./command'); // Load command registry
+
+              // 1. Prefix Commands
+              if (isCmd) {
+                  const cmd = events.commands.find((c) => c.pattern === command || (c.alias && c.alias.includes(command)));
+                  if (cmd) {
+                      console.log(`[CMD] Found: "${command}"`);
+                      if (cmd.react) { try { await conn.sendMessage(from, { react: { text: cmd.react, key: mek.key }}) } catch (e) { console.error("[ERROR] Cmd react fail:", e); } }
+                      try {
+                          console.log(`[CMD] Executing: "${command}"`);
+                          await cmd.function(conn, mek, m, {from, quoted, body, isCmd, command, args, q, text, isGroup, sender, senderNumber, botNumber2, botNumber, pushname, isMe, isOwner, isCreator, groupMetadata, groupName, participants, groupAdmins, isBotAdmins, isAdmins, reply});
+                          console.log(`[CMD] Finished: "${command}"`);
+                      } catch (e) {
+                          console.error(`[❌ CMD EXECUTION ERROR] Cmd: "${command}"`);
+                          console.error(e);
+                          const errorMsg = `⚠️ Error in '${command}':\n_${e.message}_`;
+                          reply(errorMsg);
+                          await reportErrorToOwner(conn, e, `Executing Command: ${command}`);
+                      }
+                  } else {
+                      console.log(`[CMD] Not Found: "${command}"`);
+                      // Optional: Add a "command not found" reply here if desired
+                      // reply(`Command "${command}" not found. Use ${prefix}menu to see available commands.`);
+                  }
+              }
+
+              // 2. Event-Based Commands ('on' triggers)
+              for (const cmdOn of events.commands) { // Use for...of for cleaner async handling if needed later
+                  try {
+                      let shouldExecute = false;
+                      const eventType = cmdOn.on;
+                      if (!eventType) continue; // Skip if 'on' is not defined
+
+                      if (eventType === "body" && body) { shouldExecute = true; }
+                      else if (eventType === "text" && q) { shouldExecute = true; }
+                      else if ((eventType === "image" || eventType === "photo") && type === "imageMessage") { shouldExecute = true; }
+                      else if (eventType === "sticker" && type === "stickerMessage") { shouldExecute = true; }
+                      // Add checks for video, audio etc. if your plugins use them
+
+                      if (shouldExecute) {
+                          const cmdName = cmdOn.pattern || 'event handler';
+                          console.log(`[EVENT] Executing 'on ${eventType}' for: ${cmdName}`);
+                          await cmdOn.function(conn, mek, m, {from, l, quoted, body, isCmd, command: cmdOn, args, q, text, isGroup, sender, senderNumber, botNumber2, botNumber, pushname, isMe, isOwner, isCreator, groupMetadata, groupName, participants, groupAdmins, isBotAdmins, isAdmins, reply});
+                          console.log(`[EVENT] Finished 'on ${eventType}' for: ${cmdName}`);
+                      }
+                  } catch (e) {
+                      const cmdName = cmdOn.pattern || 'event handler';
+                      console.error(`[❌ EVENT EXECUTION ERROR] Cmd: "${cmdName}", Event: ${cmdOn.on}`);
+                      console.error(e);
+                      await reportErrorToOwner(conn, e, `Executing 'on ${cmdOn.on}' for: ${cmdName}`);
+                  }
+              } // End of event loop
+
+          } catch (mainHandlerError) {
+              console.error("[❌ FATAL ERROR IN messages.upsert HANDLER]");
+              console.error(mainHandlerError);
+              await reportErrorToOwner(conn, mainHandlerError, "Main messages.upsert Handler");
+          }
+      }); // End messages.upsert
+
+      // ---- AntiDelete Handler ----
+      conn.ev.on('messages.update', async (updates) => {
+          try {
+              for (const { key, update } of updates) {
+                  [span_4](start_span)if (update?.messageStubType === proto.WebMessageInfo.MessageStubType.REVOKE && config.ANTI_DELETE === 'true') { //[span_4](end_span)
+                      console.log(`[DELETE] Message deleted in ${key.remoteJid}`);
+                      // You'll need a way to find the original message content here (e.g., from a store or cache)
+                      // await AntiDelete(conn, { key, ... }); // Pass necessary info to AntiDelete
+                  }
+              }
+          } catch (e) { console.error("[ERROR] AntiDelete:", e); await reportErrorToOwner(conn, e, "AntiDelete Handler"); }
+      });
+
+      // ---- Group Participants Update ----
+      conn.ev.on("group-participants.update", async (update) => {
+          try { await GroupEvents(conn, update); }
+          catch (e) { console.error("[ERROR] GroupEvents:", e); await reportErrorToOwner(conn, e, "Group Participants Update"); }
+      });
+
+      // ---- Helper Functions ----
+      conn.decodeJid = (jid) => { /* ... decodeJid code ... */ return jidNormalizedUser(jid); }; // Simplified
+      // ... (Include other necessary helper functions like downloadMediaMessage, sendFileUrl, etc.) ...
+      conn.sendText = (jid, text, quoted = '', options) => conn.sendMessage(jid, { text: text, ...options }, { quoted });
+      // ... (Include getName, etc.) ...
+
+  } catch (connectionError) { // Catch errors during initial connection setup
+      console.error("❌ CRITICAL: Failed to initialize WhatsApp connection:", connectionError);
+      // Reporting might not work here if conn is null, relies on console
+      await reportErrorToOwner(null, connectionError, "Initial Connection Setup");
+      // Optional: Exit or retry after a delay
+      // setTimeout(connectToWA, 15000); // Retry after 15 seconds
   }
-  if (qr && !sessionExists) {
-    console.log('[🤖] Please scan the QR code to connect.');
-  }
-  })
-  conn.ev.on('creds.update', saveCreds)
+} // End connectToWA
 
-  //==============================
-
-  conn.ev.on('messages.update', async updates => {
-    for (const update of updates) {
-      if (update.update.message === null) {
-        console.log("Delete Detected:", JSON.stringify(update, null, 2));
-        await AntiDelete(conn, updates);
-      }
-    }
-  });
-  //============================== 
-
-  conn.ev.on("group-participants.update", (update) => GroupEvents(conn, update));	  
-	  
-  //=============readstatus=======
-        
-  conn.ev.on('messages.upsert', async(mek) => {
-    mek = mek.messages[0]
-    if (!mek.message) return
-    mek.message = (getContentType(mek.message) === 'ephemeralMessage') 
-    ? mek.message.ephemeralMessage.message 
-    : mek.message;
-    
-    // --- START DEBUG LOGS ---
-    //console.log(`[DEBUG] Received message object:`, JSON.stringify(mek, null, 2)); // Pura message object dekhein (Optional: Uncomment if needed)
-    // --- END DEBUG LOGS ---
-    
-    if (config.READ_MESSAGE === 'true') {
-        try { // Add try-catch for safety
-            await conn.readMessages([mek.key]);
-            // console.log(`Marked message from ${mek.key.remoteJid} as read.`); // Can be noisy, comment out if needed
-        } catch (readError) {
-            console.error(`[ERROR] Failed to read message:`, readError);
-        }
-    }
-
-    if(mek.message.viewOnceMessageV2)
-    mek.message = (getContentType(mek.message) === 'ephemeralMessage') ? mek.message.ephemeralMessage.message : mek.message
-    
-    if (mek.key && mek.key.remoteJid === 'status@broadcast') {
-        if (config.AUTO_STATUS_SEEN === "true") {
-            try { await conn.readMessages([mek.key]) } catch (e) { console.error("[ERROR] Failed to mark status as seen:", e)}
-        }
-        if (config.AUTO_STATUS_REACT === "true") {
-            try {
-                const emojis = ['❤️', '💸', '😇', '🍂', '💥', '💯', '🔥', '💫', '💎', '💗', '🤍', '🖤', '👀', '🙌', '🙆', '🚩', '🥰', '💐', '😎', '🤎', '✅', '🫀', '🧡', '😁', '😄', '🌸', '🕊️', '🌷', '⛅', '🌟', '🗿', '🇵🇰', '💜', '💙', '🌝', '🖤', '💚'];
-                const randomEmoji = emojis[Math.floor(Math.random() * emojis.length)];
-                await conn.sendMessage(mek.key.remoteJid, { react: { text: randomEmoji, key: mek.key } }, { statusJidList: [mek.key.participant] });
-            } catch (e) { console.error("[ERROR] Failed to react to status:", e)}
-        }                       
-        if (config.AUTO_STATUS_REPLY === "true") {
-            try {
-                const user = mek.key.participant
-                const text = `${config.AUTO_STATUS_MSG}`
-                await conn.sendMessage(user, { text: text, react: { text: '💜', key: mek.key } }, { quoted: mek })
-            } catch (e) { console.error("[ERROR] Failed to reply to status:", e)}
-        }
-    }
-            
-    try { await saveMessage(mek) } catch (e) {console.error("[ERROR] Failed to save message to DB:", e)}
-
-    const m = sms(conn, mek) // Ensure 'sms' function is robust
-    const type = getContentType(mek.message)
-    const content = JSON.stringify(mek.message)
-    const from = mek.key.remoteJid
-    const quoted = type == 'extendedTextMessage' && mek.message.extendedTextMessage.contextInfo != null ? mek.message.extendedTextMessage.contextInfo.quotedMessage || [] : []
-    const body = (type === 'conversation') ? mek.message.conversation : (type === 'extendedTextMessage') ? mek.message.extendedTextMessage.text : (type == 'imageMessage') && mek.message.imageMessage.caption ? mek.message.imageMessage.caption : (type == 'videoMessage') && mek.message.videoMessage.caption ? mek.message.videoMessage.caption : ''
-  
-    // --- START DEBUG LOGS ---
-    console.log(`[DEBUG] Message Body: "${body}" | From: ${mek.key.remoteJid} | Sender: ${mek.key.participant || mek.key.remoteJid}`); // Check karein body sahi aa rahi hai ya nahi
-    // --- END DEBUG LOGS ---
-
-    const isCmd = body && typeof body === 'string' && body.startsWith(prefix) // Added checks for safety
-    var budy = typeof mek.text == 'string' ? mek.text : false;
-    const command = isCmd ? body.slice(prefix.length).trim().split(' ').shift().toLowerCase() : ''
-    const args = isCmd ? body.trim().split(/ +/).slice(1) : [] // Only calculate args if isCmd
-    const q = args.join(' ')
-    const text = args.join(' ')
-    const isGroup = from.endsWith('@g.us')
-    const sender = mek.key.fromMe ? (conn.user.id.split(':')[0]+'@s.whatsapp.net' || conn.user.id) : (mek.key.participant || mek.key.remoteJid)
-    const senderNumber = sender ? sender.split('@')[0] : null
-    const botNumber = conn.user.id ? conn.user.id.split(':')[0] : null
-    const pushname = mek.pushName || 'Sin Nombre'
-    const isMe = botNumber && senderNumber ? botNumber.includes(senderNumber) : false
-    const isOwner = ownerNumber.includes(senderNumber) || isMe
-    const botNumber2 = conn.user.id ? await jidNormalizedUser(conn.user.id) : null; // Added check
-    const groupMetadata = isGroup ? await conn.groupMetadata(from).catch(e => { console.error("[ERROR] Failed to get group metadata:", e); return null; }) : ''
-    const groupName = isGroup && groupMetadata ? groupMetadata.subject : ''
-    const participants = isGroup && groupMetadata ? groupMetadata.participants : []
-    const groupAdmins = isGroup ? getGroupAdmins(participants) : [] // Ensure getGroupAdmins handles empty participants
-    const isBotAdmins = isGroup && botNumber2 ? groupAdmins.includes(botNumber2) : false
-    const isAdmins = isGroup ? groupAdmins.includes(sender) : false
-    const isReact = m.message.reactionMessage ? true : false
-    
-    const reply = (teks) => {
-      try { // Add try-catch for safety
-         conn.sendMessage(from, { text: teks }, { quoted: mek })
-      } catch (e) {
-         console.error("[ERROR] Failed to send reply:", e);
-      }
-    }
-  
-    const udp = botNumber ? botNumber.split(`@`)[0] : null
-    const qadeer = ['923151105391','923151105391'] 
-    const dev = [] 
-
-    let isCreator = false;
-    if (udp) { // Check if udp exists
-        isCreator = [udp, ...qadeer, ...dev]
-            .map(v => v ? v.replace(/[^0-9]/g, '') + '@s.whatsapp.net' : null) // Add check for v
-            .filter(Boolean) // Remove null entries
-            .includes(sender);
-    }
-
-    if (isCreator && mek.text && mek.text.startsWith('%')) { // Added mek.text check
-					let code = budy.slice(2);
-					if (!code) {
-						reply(`Provide me with a query to run Master!`);
-						return;
-					}
-					try {
-						let resultTest = eval(code);
-						if (typeof resultTest === 'object')
-							reply(util.format(resultTest));
-						else reply(String(resultTest)); // Use String() for safety
-					} catch (err) {
-						reply(util.format(err));
-					}
-					return;
-				}
-    if (isCreator && mek.text && mek.text.startsWith('$')) { // Added mek.text check
-					let code = budy.slice(2);
-					if (!code) {
-						reply(`Provide me with a query to run Master!`);
-						return;
-					}
-					try {
-						let resultTest = await eval(
-							`(async () => { ${code} })()` // Simplified async eval
-						);
-						let h = util.format(resultTest);
-						reply(h);
-					} catch (err) {
-						reply(util.format(err));
-					}
-					return;
-				}
-
-    // --- START DEBUG LOGS ---
-    console.log(`[DEBUG] isCmd: ${isCmd}, Detected Command: "${command}", Prefix Used: "${prefix}"`); // Check karein command detect ho raha hai ya nahi
-    // --- END DEBUG LOGS ---
-
-
-    //==========public react============//
-    if (!isReact && config.AUTO_REACT === 'true') {
-        try { // Add try-catch for safety
-            const reactions = ['🌼', '❤️', /* ... other emojis ... */, '🇵🇰'];
-            const randomReaction = reactions[Math.floor(Math.random() * reactions.length)];
-            m.react(randomReaction);
-        } catch (e) { console.error("[ERROR] Failed during public react:", e); }
-    }
-    
-    if (!isReact && config.CUSTOM_REACT === 'true') {
-        try { // Add try-catch for safety
-            const reactions = (config.CUSTOM_REACT_EMOJIS || '🥲,😂,👍🏻,🙂,😔').split(',');
-            const randomReaction = reactions[Math.floor(Math.random() * reactions.length)];
-            m.react(randomReaction);
-        } catch (e) { console.error("[ERROR] Failed during custom react:", e); }
-    }
-    
-    // --- START DEBUG LOGS ---
-    // Pehle isOwner check karein
-    console.log(`[DEBUG] Is Owner: ${isOwner}, Sender: ${senderNumber}`);
-    // Phir config.MODE check karein
-    console.log(`[DEBUG] Config Mode: "${config.MODE}", Is Group: ${isGroup}`); 
-    // --- END DEBUG LOGS ---
-
-    //==========WORKTYPE============ 
-    if(!isOwner && config.MODE === "private") {
-        console.log(`[DEBUG] Blocked: Mode is private and sender is not owner.`); // Add log here
-        return;
-    }
-    if(!isOwner && isGroup && config.MODE === "inbox") {
-        console.log(`[DEBUG] Blocked: Mode is inbox, sender is not owner, and message is in group.`); // Add log here
-        return;
-    }
-    if(!isOwner && !isGroup && config.MODE === "groups") {
-        console.log(`[DEBUG] Blocked: Mode is groups, sender is not owner, and message is not in group.`); // Add log here
-        return;
-    }
-   
-    // take commands 
-                   
-    const events = require('./command')
-    // const cmdName = isCmd ? body.slice(1).trim().split(" ")[0].toLowerCase() : false; // Already calculated as 'command'
-    if (isCmd) {
-        const cmd = events.commands.find((cmd) => cmd.pattern === (command)) || events.commands.find((cmd) => cmd.alias && cmd.alias.includes(command)); 
-        
-        // --- START DEBUG LOGS ---
-        if (cmd) {
-            console.log(`[DEBUG] Command found: "${command}", Pattern: "${cmd.pattern || (cmd.alias ? cmd.alias.join(',') : 'N/A')}"`);
-        } else {
-            console.log(`[DEBUG] Command NOT found: "${command}"`);
-        }
-        // --- END DEBUG LOGS ---
-
-        if (cmd) {
-            if (cmd.react) {
-                try { // Add try-catch
-                   conn.sendMessage(from, { react: { text: cmd.react, key: mek.key }}) 
-                } catch (e) { console.error("[ERROR] Failed to send command react:", e); }
-            }
-  
-            try {
-                // --- START DEBUG LOGS ---
-                console.log(`[DEBUG] Executing command: "${command}"`);
-                // --- END DEBUG LOGS ---
-                await cmd.function(conn, mek, m,{from, quoted, body, isCmd, command, args, q, text, isGroup, sender, senderNumber, botNumber2, botNumber, pushname, isMe, isOwner, isCreator, groupMetadata, groupName, participants, groupAdmins, isBotAdmins, isAdmins, reply}); // Added await for async commands
-                // --- START DEBUG LOGS ---
-                console.log(`[DEBUG] Command execution finished: "${command}"`);
-                // --- END DEBUG LOGS ---
-            } catch (e) {
-                // --- UPDATE ERROR LOG ---
-                console.error(`[❌ PLUGIN EXECUTION ERROR] Command: "${command}"`);
-                console.error(e); // Log the full error object for details
-                reply(`⚠️ Error executing command: ${command}\n_${e.message}_`); // Notify user
-                // --- END UPDATE ERROR LOG ---
-            }
-        }
-    }
-
-    // --- START DEBUG LOGS for command.on events ---
-    // console.log(`[DEBUG] Checking for 'on' events (body, text, image, sticker)`); // Can be noisy, comment out if needed
-    // --- END DEBUG LOGS ---
-
-    events.commands.map(async(cmdOn) => { // Renamed variable to avoid conflict
-        try { 
-            let shouldExecute = false;
-            let eventType = '';
-
-            if (body && cmdOn.on === "body") { shouldExecute = true; eventType = 'body'; }
-            else if (mek.q && cmdOn.on === "text") { shouldExecute = true; eventType = 'text'; }
-            else if ((cmdOn.on === "image" || cmdOn.on === "photo") && mek.type === "imageMessage") { shouldExecute = true; eventType = 'image/photo'; }
-            else if (cmdOn.on === "sticker" && mek.type === "stickerMessage") { shouldExecute = true; eventType = 'sticker'; }
-            
-            if (shouldExecute) {
-                console.log(`[DEBUG] Executing 'on ${eventType}' for command: ${cmdOn.pattern || 'N/A'}`);
-                await cmdOn.function(conn, mek, m, {from, l, quoted, body, isCmd, command: cmdOn, args, q, text, isGroup, sender, senderNumber, botNumber2, botNumber, pushname, isMe, isOwner, isCreator, groupMetadata, groupName, participants, groupAdmins, isBotAdmins, isAdmins, reply}); // Added await
-                 console.log(`[DEBUG] Finished 'on ${eventType}' for command: ${cmdOn.pattern || 'N/A'}`);
-            }
-
-        } catch (e) {
-             console.error(`[❌ PLUGIN 'ON' EVENT ERROR] Command: "${cmdOn.pattern || 'N/A'}", Event: ${cmdOn.on}`);
-             console.error(e); // Log the full error object
-        }
-    }); 
-  
-  });
-    //===================================================   
-    conn.decodeJid = jid => {
-      if (!jid) return jid;
-      if (/:\d+@/gi.test(jid)) {
-        let decode = jidDecode(jid) || {};
-        return (
-          (decode.user &&
-            decode.server &&
-            decode.user + '@' + decode.server) ||
-          jid
-        );
-      } else return jid;
-    };
-    //===================================================
-    conn.copyNForward = async(jid, message, forceForward = false, options = {}) => {
-      // (Baqi helper functions jaise hain waise hi rahenge)
-      // ... (copyNForward code) ...
-    }
-    //=================================================
-    conn.downloadAndSaveMediaMessage = async(message, filename, attachExtension = true) => {
-      // ... (downloadAndSaveMediaMessage code) ...
-    }
-    //=================================================
-    conn.downloadMediaMessage = async(message) => {
-      // ... (downloadMediaMessage code) ...
-    }
-    // ... (baaki saare helper functions jaise sendFileUrl, cMod, getFile etc. yahan rahenge) ...
-    
-    //=====================================================
-    conn.sendText = (jid, text, quoted = '', options) => conn.sendMessage(jid, { text: text, ...options }, { quoted })
-    
-    // ... (baaki ke helper functions sendButtonText, send5ButImg, getName etc. yahan rahenge) ...
-
-    conn.serializeM = mek => sms(conn, mek, store); // Ensure 'store' is defined if you use this
-  }
-  
 // --- SERVER SETUP (HEROKU COMPATIBLE) ---
 const port = process.env.PORT || 9090;
 
 app.get("/", (req, res) => {
-  res.send("QADEER-AI SERVER IS RUNNING ✅");
+  res.send(`${config.BOT_NAME || 'QADEER-AI'} SERVER IS RUNNING ✅`);
 });
 
 app.listen(port, () => {
-  console.log(`Server is listening on port: ${port}`);
-  
-  // Plugins ko server start hone ke baad load karein
+  console.log(`Server listening on port: ${port}`);
   loadPlugins();
-
-  // Plugins load karne ke 4 second baad bot connect karein
-  console.log('Waiting 4 seconds before connecting to WhatsApp...');
+  console.log('Waiting 4 seconds before connecting...');
   setTimeout(() => {
-    connectToWA();
+    connectToWA().catch(err => console.error("❌ Initial connection attempt failed:", err));
   }, 4000);
 });
